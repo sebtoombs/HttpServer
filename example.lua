@@ -1,4 +1,4 @@
-require('HttpServer2')
+require('HttpServer')
 
 local app = express.new()
 

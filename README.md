@@ -1,14 +1,49 @@
 # Express.js-like HTTP server library for NodeMCU
 
-This library is a fork of the original library by T-vK: [NodeMCU-Express](https://github.com/T-vK/NodeMCU-Express).
+This library is a fork of the original library by T-vK: [NodeMCU-Express](https://github.com/T-vK/NodeMCU-Express). Improvements include;
+- Execute routes/middlewares in correct  order
+- Corrected path matching for routes vs middlewares
 
 ## About
 This HTTP server library is very similar to the popular node.js module [express.js](https://expressjs.com/en/starter/hello-world.html).  
 It's extremely intuitive and easy to use thus and I'm making the interface as similar as possible.  
 The library is written in Lua.
 
-## Features (current and upcoming)
-[Go to the project site.](https://github.com/T-vK/NodeMCU-Express/projects/1)
+## Get Started
+Using this library is pretty simple.
+1. Download [HttpServer.lua](HttpServer.lua) from this repository
+2. Upload HttpServer.lua to your device
+3. Require the library `require('HttpServer')` in your application code
+
+## Example
+For a full example go here: [example.lua](example.lua)
+
+Here is the short version:
+``` Lua
+require('HttpServer')
+
+local app = express.new()
+
+-- Define a new middleware that prints the url of every request
+app:use(function(req,res,next) 
+    print(req.url)
+    next()
+end)
+
+-- Define a new route that just returns an html site that says "HELLO WORLD!"
+app:get('/helloworld',function(req,res)
+    res:send('<html><head></head><body>HELLO WORLD!</body></html>')
+end)
+
+-- Serve the file `home.html` when visiting `/home`
+app:use('/home',express.static('home.html'))
+
+-- Serve all files that are in the folder `http` at url `/libs/...`
+-- (To be more accurate I'm talking about all files starting with `http/`.)
+app:use('/libs',express.static('http'))
+
+app:listen()
+```
 
 ## Serving files
 Serving files is really easy and can be done with a single line of code.
@@ -23,7 +58,10 @@ app:use('/example',express.static('foo'))
 If you have a file called `foo/test.html` on your ESP8266 module and it's IP is 192.168.1.10, then you will be able to access it by visiting `http://192.168.1.10/example/text.html`.
 
 ## Routes
-A route consists of a URL path and a function. Whenever someone visits the URL path, the function gets called.  
+A route consists of a URL path and a function. Whenever someone visits the URL path, the function gets called. 
+
+**Note**: regular expressions are currently not implemented.
+
 For instance:  
 ``` Lua
 -- Create a new route at `/led-on` an the connected function turns an LED on
@@ -44,41 +82,7 @@ app:use(function(req,res,next)
     print('New request!' .. ' Method: ' .. req.method .. ' URL: ' .. req.url)
     next()
 end)
-
 ```
-
-## Example
-For a full example go here: [example.lua](example.lua)
-
-Here is the short version:
-``` Lua
-require('HttpServer')
-
-local app = express.new()
-app:listen()
-
--- Define a new middleware that prints the url of every request
-app:use(function(req,res,next) 
-    print(req.url)
-    next()
-end)
-
--- Define a new route that just returns an html site that says "HELLO WORLD!"
-app:get('/helloworld',function(req,res)
-    res:send('<html><head></head><body>HELLO WORLD!</body></html>')
-end)
-
--- Serve the file `home.html` when visiting `/home`
-app:use('/home',express.static('home.html'))
-
--- Serve all files that are in the folder `http` at url `/libs/...`
--- (To be more accurate I'm talking about all files starting with `http/`.)
-app:use('/libs',express.static('http'))
-```
-Of course your ESP8266 needs to be connected to your WiFi or your ESP8266 has to host an AP that you are connecting to.
-
-## How to use it
-Just upload `HttpServer.lua` to your ESP8266, then you can use `require('HttpServer') just like in my example in your `init.lua`.
 
 ## Need help? Have a feature request? Found a bug?
 Create an issue right here on github.
