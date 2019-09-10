@@ -35,16 +35,21 @@ express = {
             defaultStatusCode = defaultStatusCode;
             defaultHeaders = defaultHeaders;
             defaultHttpVersion = defaultHttpVersion; 
-            routes = {};
             middlewares = {};
+
             listen = function(this, port, ip)
                 if port then
-                    this.ip = ip
                     this.port = port
                 end
-                this.tcpServer:listen(this.port,function(conn)
+                if ip then
+                    this.ip = ip
+                end
+
+                this.tcpServer:listen(this.port, function(conn)
                     conn:on('receive',function(conn, rawRequest)
-                        --print("RawRequest: "..rawRequest)
+
+                        local resEnded = false;
+
                         local req = {
                             app=this;
                             route={};
@@ -55,107 +60,89 @@ express = {
                         }
                         local res = {
                             app = this;
-                            _ended = false;
                             sendRaw = function(this,rawRes)
                                 conn:send(rawRes);
+                                resEnded = true;
                             end;
+                            --_ended = false;
                             _headers = this.defaultHeaders;
                             statusCode = this.defaultStatusCode;
                             statusText = this.statusCodes[this.defaultStatusCode];
                             httpVersion = this.defaultHttpVersion;
                         }
+
+                        function matchRoute(req, middleware)
+                            local route = middleware.route
+                            if req.url == route or route == "*" then return true end --Match get, post, all etc
+                            --todo match regex on get post all etc
+                            if middleware.method == '_USE' and string.sub(req.url,1,string.len(route)) == route then return true end --match use
+
+                            return false
+                        end
+
+                        function testMiddleware(req, middleware)
+                            if middleware.method == '_USE' and matchRoute(req, middleware) then
+                                return true
+                            end
+                            if (middleware.method == req.method or middleware.method == '_ALL') and matchRoute(req, middleware) then
+                                return true
+                            end
+                            return false
+                        end
                         
                         -- Call middleware callbacks 
-                        local middlewareCallbacksMaster = {} -- all middlewares that need to be called
+                        local middlewareCallbacks = {} -- all middlewares that need to be called
                         for i = 1, #this.middlewares do
                             local middleware = this.middlewares[i]
-                            local route = middleware.route
                             local callback = middleware.callback
 
-                            if string.sub(req.url,1,string.len(req.url)-1) == route or route == '*' then -- if url matches route pattern
-                                print("Running middleware: "..route)
-                                middlewareCallbacksMaster[#middlewareCallbacksMaster+1] = callback
+                            if testMiddleware(req, middleware) then
+                                --middlewareCallbacks[#middlewareCallbacks+1] = callback
+                                table.insert(middlewareCallbacks, callback)
                             end
                         end
                         local i = 1
                         function _next()
-                            if(res._ended) then return end;
-                            if i > #middlewareCallbacksMaster then
+                            if(resEnded) then return end;
+                            if i > #middlewareCallbacks then
                                 return
                             end
-                            local middlewareCallback = middlewareCallbacksMaster[i]
+                            local middlewareCallback = middlewareCallbacks[i]
                             i = i+1
                             middlewareCallback(req,res,_next)
                         end
-                        _next()
+                        _next() -- call first middleware
 
-                        -- Call route callbacks
-                        if(not res._ended) then
-                            local methodsToCheck = {'_ALL',req.method}
-                            for i = 0, #methodsToCheck do
-                                local method = methodsToCheck[i]
-                                if this.routes[method] then
-                                    print("Checking callbacks for: "..method..", "..req.url)
-                                    for route, routeCallbacks in pairs(this.routes[method]) do
-                                        print("Route: "..route)
-                                        if string.sub(req.url,1,string.len(req.url)-1) == route or route == '*' then -- if url matches route pattern
-                                            for j = 0, #routeCallbacks do
-                                                local routeCallback = routeCallbacks[j]
-                                                routeCallback(req,res)
-                                                if(res._ended) then break end
-                                            end
-                                        end
-                                    if(res._ended) then break end
-                                    end
-                                end
-                            end
-                        end
+                        
                     end)
                 end)
             end;
-            _addRoute = function(this, method, route, callback) -- internal function to add routes to the express instance
-                print("Adding route: "..route..", method: "..method)
-                if not this.routes[method] then
-                    this.routes[method] = {}
-                    this.routes[method][route] = {} 
-                elseif not this.routes[method][route] then
-                    this.routes[method][route] = {}
-                end
-                table.insert(this.routes[method][route],callback) --callback(req,res)
+
+            --internal function for adding all middlewares (use, get, post ec)
+            _addMiddleware = function(this, method, route, callback)
+                print('Adding middleware: '..method.." - "..route)
+                table.insert(this.middlewares, {["callback"]=callback, ["route"]=route, ["method"]=method})
             end;
+            
             use = function(this, route, callback) -- to add a middleware
                 if callback == nil then
                     callback = route
                     route = '*'
-                end
-                print("Added middleware: "..route)
-                this.middlewares[#this.middlewares+1] = {["callback"]=callback, ["route"]=route} --callback(req, res, next) 
+                end;
+                this:_addMiddleware('_USE', route, callback)
             end;
             all = function(this, route, callback) --to register routes on all HTTP methods
-                this:_addRoute('_ALL', route, callback)
+                this:_addMiddleware('_ALL', route, callback)
             end;
         }
-        
+
         -- Dynamically generate class methods for every supported HTTP verb/method (get, post etc)
         for i = 1, #supportedMethods do
             local method = supportedMethods[i]
-            expressInstance.routes[method] = {}
             expressInstance[method:lower()] = function(this, route, callback)
-               this:_addRoute(method,route,callback) 
+                expressInstance:_addMiddleware(method,route,callback) 
             end
-        end
-        
-
-        expressInstance.printGetMethods = function(this)
-            print('GET METHODS:')
-            for route, routeCallbacks in pairs(this.routes['GET']) do
-                print('Route: '..route)
-                for j = 0, #routeCallbacks do
-                    print('Callback: '..j)
-                end
-            end
-            print('---END')
-        end
+        end;
         
         ------------------------------------------------------
         --------------- BUILT-IN MIDDLEWARES -----------------
@@ -203,8 +190,6 @@ express = {
                 rawResponse = rawResponse .. '\r\n' .. body
                 
                 this:sendRaw(rawResponse)
-
-                this._ended = true;
                 
                 this._headers = defaultHeaders --reset the _headers table after sending the response
             end
