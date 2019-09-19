@@ -48,8 +48,6 @@ express = {
                 this.tcpServer:listen(this.port, function(conn)
                     conn:on('receive',function(conn, rawRequest)
 
-                        local resEnded = false;
-
                         local req = {
                             app=this;
                             route={};
@@ -61,10 +59,11 @@ express = {
                         local res = {
                             app = this;
                             sendRaw = function(this,rawRes)
+                                --print("Sending Response: "..rawRes)
                                 conn:send(rawRes);
-                                resEnded = true;
+                                this._ended = true;
                             end;
-                            --_ended = false;
+                            _ended = false;
                             _headers = this.defaultHeaders;
                             statusCode = this.defaultStatusCode;
                             statusText = this.statusCodes[this.defaultStatusCode];
@@ -91,23 +90,24 @@ express = {
                         end
                         
                         -- Call middleware callbacks 
-                        local middlewareCallbacks = {} -- all middlewares that need to be called
+                        local middlewareToRun = {} -- all middlewares that need to be called
                         for i = 1, #this.middlewares do
                             local middleware = this.middlewares[i]
                             local callback = middleware.callback
 
                             if testMiddleware(req, middleware) then
                                 --middlewareCallbacks[#middlewareCallbacks+1] = callback
-                                table.insert(middlewareCallbacks, callback)
+                                table.insert(middlewareToRun, {["callback"]=callback, ["route"]=middleware.route})
                             end
                         end
                         local i = 1
                         function _next()
-                            if(resEnded) then return end;
-                            if i > #middlewareCallbacks then
+                            if(res._ended) then return end;
+                            if i > #middlewareToRun then
                                 return
                             end
-                            local middlewareCallback = middlewareCallbacks[i]
+                            local middlewareCallback = middlewareToRun[i].callback
+                            req.route = middlewareToRun[i].route --I'm not totally sure about this
                             i = i+1
                             middlewareCallback(req,res,_next)
                         end
@@ -151,73 +151,141 @@ express = {
        
         -- Response generator
         expressInstance:use(function(req,res,next)
-            -- Allows setting headers
-            res.set = function(this,key,value)
+            res.setHeader = function(this, key, value)
                 if value == nil then
-                    value = ''
+                    value= ''
                 end
                 this._headers[key] = value
                 return this
             end
-            -- Allow removing headers
-            res.removeHeader = function(this,key)
+            res.removeHeader = function(this, key)
                 this._headers[key] = nil
                 return this
             end
-            -- Allow setting response code
-            res.status = function(this,code)
+            res.status = function(this, code)
                 this.statusCode = code
-                this.statusText = res.app.statusCodes[code]
+                if this.app.statusCodes[code] then
+                    this.statusText = this.app.statusCodes[code]
+                else
+                    this.statusText = this.app.statusCodes[200]
+                end
                 return this
-            end
-            -- Allow sending body (string or supported table which gets converted to json)
-            res.send = function(this,body)
-                if type(body) == 'table' then
-                    body = cjson.encode(body)
-                    this:set('Content-Type', 'application/json')
-                end
-                
-                local rawResponse = this.httpVersion .. ' ' .. this.statusCode .. ' ' .. this.statusText .. '\r\n'
-                
-                if body and this._headers['Content-Length'] == nil then
-                    this:set('Content-Length', string.len(body))
-                end
-                
-                for key, value in pairs(this._headers) do
-                    rawResponse = rawResponse .. key .. ': ' .. value .. '\r\n'
-                end
-                                
-                rawResponse = rawResponse .. '\r\n' .. body
-                
-                this:sendRaw(rawResponse)
-                
-                this._headers = defaultHeaders --reset the _headers table after sending the response
             end
             -- Dedicated function for json body
             res.json = function(this,table)
-                res:send(table)
+                this:send(this, table)
+                return this
             end
-            
+            res.send = function(this, body)
+                
+                if this._headers['Content-Length'] == nil then
+                    this:setHeader('Content-Length', string.len(body))
+                end
+
+
+                local rawResponse = this.httpVersion .. ' ' .. this.statusCode .. ' ' .. this.statusText .. '\r\n'
+
+                for key, value in pairs(this._headers) do
+                    rawResponse = rawResponse .. key .. ': ' .. value .. '\r\n'
+                end
+
+                if body ~= nil and body:len() > 0 then
+                    rawResponse = rawResponse .. '\r\n' .. body
+                end
+
+                this:sendRaw(rawResponse)
+
+                this._headers = defaultHeaders --reset the _headers table after sending the response
+
+                return this
+            end
+            res.endResponse = function(this)
+                this:send()
+                return this
+            end
             next()
-        end) 
+        end)
         
         return expressInstance
     end;
 
     -- Returns middleware to server static files 
     static = function(basePath)
-        if string.sub(basePath,1,1) == '/' then
-            basePath = string.sub(basePath,2) -- remove leading '/'
+
+
+        local stripTrailingSlash = function(str)
+            if(string.sub(str, string.len(str), -1) == '/') then
+                str = string.sub(str, 1, -2)
+            end
+
+            return str
+        end
+        local stripLeadingSlash = function(str)
+            if(string.sub(str, 1,1) == '/') then
+                str = string.sub(str, 2, -1)
+            end
+            return str
         end
 
+        --[[if string.sub(basePath,1,1) == '/' then
+            basePath = string.sub(basePath,2) -- remove leading '/'
+        end]]
+
+        basePath = stripLeadingSlash(stripTrailingSlash(basePath))
+
         local middleware = function(req,res,next)
+            if req.method ~= "GET" and req.method ~= "HEAD" then
+                res:status(405)
+                res:setHeader('Allow', 'GET, HEAD')
+                res:setHeader('Content-Length', 0)
+                res:endResponse()
+                return
+            end
             local fileToServePath = basePath
-            if not file.exists(basePath) then
+            --[[if not file.exists(basePath) then
                 local urlLen = string.len(req.url)
                 local baseLen = string.len(basePath)
-                fileToServePath = basePath .. string.sub(req.url,-(urlLen-baseLen+2))
+                fileToServePath = basePath .. req.url--string.sub(req.url,-(urlLen-baseLen+2))
+            end]]
+
+            local currentRoute = stripLeadingSlash(stripTrailingSlash(req.route))
+            if(string.sub(currentRoute, string.len(currentRoute)) == '*') then
+                currentRoute = string.sub(currentRoute, 1, -2)
             end
-            print(fileToServePath)
+
+            local currentRequest = stripLeadingSlash(stripTrailingSlash(req.url))
+
+            --print("SEP: "..package.config:sub(1,1))
+            --print("Base: "..basePath)
+            --print("Current route: "..currentRoute)
+            --print("Request: "..currentRequest)
+
+            if(string.sub(currentRequest, 1, string.len(currentRoute)) == currentRoute) then
+                currentRequest = string.sub(currentRequest, string.len(currentRoute)+1)
+                currentRequest = stripLeadingSlash(currentRequest)
+            end
+
+
+            --Replace URL slashes with filesystem separator
+            currentRequest = currentRequest:gsub("/", package.config:sub(1,1))
+
+            --print("Req: "..currentRequest)
+
+            --Join it together
+            if currentRequest:len() > 0 then
+                fileToServePath = fileToServePath .. package.config:sub(1,1) .. currentRequest
+            end
+        
+            --print("Path: "..fileToServePath)
+
+            -- Look for directory and server index.html if required
+            local s = file.stat(fileToServePath)
+            if(s.is_dir) then
+                fileToServePath = fileToServePath .. package.config:sub(1,1) .. 'index.html'
+            end
+
+            print("Serving file: "..fileToServePath)
+
             if file.exists(fileToServePath) then
                 local fileToServe = file.open(fileToServePath, 'r')
                 if fileToServe then
@@ -225,7 +293,10 @@ express = {
                     fileToServe:close()
                     fileToServe = nil
                 end
+            else
+                print("File not found")
             end
+
             next()
         end
         
